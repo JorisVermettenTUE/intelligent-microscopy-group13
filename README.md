@@ -22,6 +22,7 @@ Python (laptop)  ── "X,800" / "Y,-400" ──▶  Arduino  ──▶  stappe
 | `final_segmentatie/final_segmentatie.py` | Hoofdprogramma: scant alle 8 wells en analyseert elke foto |
 | `final_segmentatie/multinucleair.py` | Het segmentatie-algoritme (ook los te gebruiken op een map met foto's) |
 | `zstage/zstage.py` | Z-stage met het toetsenbord besturen om scherp te stellen |
+| `kalibratie/calibratie.py` | Meet `STEPS_PER_MM` en het beeldveld (FOV) van de opstelling |
 | `test_1e_run/` | Resultaten van het algoritme op de eerste testopnames |
 | `environment.yml` | Conda-omgeving met alle Python-packages |
 
@@ -50,6 +51,8 @@ Upload daarna met de Arduino IDE:
    - `CAMERA_INDEX`: welke camera de Arducam is (`0`, `1`, `2`, …)
    - `FOV_X_MM` / `FOV_Y_MM`: het gemeten beeldveld van de microscoop
    - `STEPS_PER_MM_X` / `STEPS_PER_MM_Y`: kalibratie van de gantry
+
+   De laatste twee haal je uit de [kalibratie](#kalibratie).
 2. **Microscoop handmatig in het midden van well 1** zetten en **scherpstellen** met de Z-stage (zie [Z-stage](#z-stage-scherpstellen)).
 3. Starten:
    ```bash
@@ -110,7 +113,71 @@ Cellen die door de beeldrand worden afgesneden tellen niet mee. Door de overlap 
 | Normale cellen / clusters | ~20 – 33 |
 | Multinucleaire cellen | ~36 – 97 |
 
-> ⚠️ `MIN_RADIUS` is gemeten op de webcam-foto's van de eerste run. Kalibreer hem opnieuw als de camera of de vergroting verandert (zie hieronder).
+> ⚠️ `MIN_RADIUS` is gemeten op de webcam-foto's van de eerste run. Kalibreer hem opnieuw als de camera of de vergroting verandert (zie [Kalibratie](#kalibratie)).
+
+---
+
+## Kalibratie
+
+Voordat de scan betrouwbaar werkt, moeten drie dingen kloppen: hoe ver de gantry per motorstap beweegt, hoe groot het beeldveld is, en vanaf welke celgrootte iets multinucleair heet. Herhaal de kalibratie als de camera, het objectief of de vergroting verandert.
+
+### 1. Gantry en beeldveld (`STEPS_PER_MM`, `FOV`)
+
+Met `kalibratie/calibratie.py` meet je deze waarden met de opstelling zelf. Zet eerst `ARDUINO_PORT`, `CAMERA_INDEX` en de resolutie bovenin het script gelijk aan die in `final_segmentatie.py`, en start dan:
+
+```bash
+python kalibratie/calibratie.py
+```
+
+Er opent een live camerabeeld. Daarin meet je:
+
+| Stap | Toets | Wat er gebeurt |
+|---|---|---|
+| **A. Pixels per stap** | `M` | De stage beweegt automatisch een stukje in X en in Y. Met *phase correlation* wordt gemeten hoeveel pixels het beeld verschuift. Elke as wordt 3× gemeten en gemiddeld. Werkt op elk scherp preparaat met structuur (cellen of een kalibratieslide). |
+| **B. µm per pixel** | `C` | Met een kalibratieslide (schaalverdeling) in beeld: klik twee streepjes aan die ver uit elkaar liggen en vul de echte afstand in µm in. |
+| **B'. Alternatief: wand tot wand** | `1` / `2` | Zonder kalibratieslide: rij met de pijltjes naar de ene wand van een well en druk `1`, rij naar de andere wand en druk `2`. Vul de afstand in (ibidi: 10.0 mm in X, 10.7 mm in Y). |
+| **Opslaan** | `P` | Print het resultaat en slaat het op in `kalibratie/calibratie.json`. |
+
+Uit A + B (of A + B') wordt de rest berekend:
+
+```
+µm per stap   = µm per pixel × pixels per stap
+STEPS_PER_MM  = 1000 / µm per stap
+FOV           = beeldgrootte (px) × µm per pixel
+```
+
+Het script print de waarden die je overneemt in `final_segmentatie.py`, bijvoorbeeld:
+
+```
+STEPS_PER_MM_X = 80.00
+STEPS_PER_MM_Y = 80.00
+FOV_X_MM = 0.7500
+FOV_Y_MM = 0.4800
+```
+
+Overige toetsen: pijltjes = stage bewegen, `[` / `]` = stapgrootte kleiner/groter, `G` = dradenkruis aan/uit, `Q` / `Esc` = stoppen.
+
+**Tips**
+- Stel eerst goed scherp met de Z-stage; bij een onscherp beeld geeft `M` een lage betrouwbaarheid.
+- De *terugkeerfout* laat zien hoeveel speling (backlash) de gantry heeft. Het script rijdt elke positie vanaf dezelfde kant aan om die op te vangen.
+- De *beeldhoek* laat zien in welke richting het beeld verschuift. Wijkt die voor X of Y een paar graden af van een rechte hoek, dan staat de camera scheef ten opzichte van de gantry.
+- De kalibratieslide (B) is nauwkeuriger dan wand tot wand (B'), omdat de wanden van een well lastig precies te zien zijn.
+
+### 2. Segmentatie (`MIN_RADIUS`, `DARK_FACTOR`)
+
+De drempels voor de detectie staan bovenin `final_segmentatie/multinucleair.py`. Maak een paar foto's met de echte camera en vergroting, en open ze in de interactieve viewer:
+
+```bash
+python final_segmentatie/multinucleair.py <map met foto's> --interactief
+```
+
+- Zet `DARK_FACTOR` zo dat de cellen in stap 3 rood worden en de achtergrond niet.
+- Zet `MIN_RADIUS` net boven de grootste straal van normale cellen en clusters, maar onder die van de kleinste reuzencel. In stap 5 staat bij elk gebied de straal.
+- Druk `q`; de gekozen waarden worden geprint. Vul ze in bovenin `multinucleair.py`.
+
+### 3. Startpositie
+
+De scan gaat ervan uit dat de microscoop bij het starten **precies in het midden van well 1** staat; alle andere posities worden daarvandaan berekend. De foto's dekken de well precies tot aan de wanden af, dus een afwijking bij het starten schuift het hele scangebied mee: aan de ene kant mis je dan een strook van de well, aan de andere kant fotografeer je de wand. Gebruik het dradenkruis van `calibratie.py` (toets `G`) om het midden van well 1 nauwkeurig op te zoeken.
 
 ---
 
